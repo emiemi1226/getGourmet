@@ -1,191 +1,187 @@
 <?php
-//ホットペッパーグルメから、都道府県別の店舗一覧を取得するスクリプト
+// グルメから店舗の一覧を取得するスクリプト
+require_once 'HTTP/Request2.php';
 
-class HpbShopListTool {
-  var $hpInfo = array(
-    "" => array(
-          "top" => 'https://www.hotpepper.jp/yoyaku/',
-          "type" => "グルメ",
-    )
-  );
+class hpGourmetTool {
 
-  function __construct() {
-    $this->output_dir = './output/';
-  }
+    //予約画面のトップ
+    var $hpGourmetHp = "https://www.hotpepper.jp/yoyaku/";
 
-  function create($type, $pref) {
-    Util::log("HPB LIST CREATE START");
-    
-    require_once 'HTTP/Request2.php';
-           
-    $this->type = $type;
-    $typeinfo = $this->type_list[$type];
-
-    $filename = $typeinfo['fileident']."_".sprintf("%02d.tsv", $pref);
-    if (!file_exists($this->output_dir)) {
-      mkdir($this->output_dir);
-    }
-    $output = "{$this->output_dir}/".date('Ymd_His')."_{$filename}";
-    Util::log($output);
-
-    $conf = new Config();
-
-    $prefName = $conf->prefectures[(int)$pref];
-    
-    $header = "種別\t店舗id\t店舗名\t都道府県\t住所\t電話番号\t店舗URL\t営業時間\t定休日\t備考\n";
-    file_put_contents($output, $header);
-    set_time_limit(0);
-    
-    $url = sprintf($typeinfo['listtop'], $pref);
-    $shops = array();
-    $nexturl_list = array();
-    for ($i = 0; $i < 500; $i++) {
-      Util::log("HPB LIST {$url}");
-      $ret = $this->getPageShops($url);
-      foreach ($ret['shops'] as $s) {
-        $line = array();
-        $line[] = "{$typeinfo['name']}";
-        foreach (array('hpbid', 'name', 'addr', 'tel', 'url', 'range', 'holiday','comment') as $key) {
-          if ($key == 'addr') {
-            // 県で切りたい
-            $line[] = $prefName;
-            $line[] = mb_substr($s[$key], mb_strlen($prefName));
-          } else {
-            $line[] = str_replace("\t", " ", $s[$key]);
-          }
-        }
-        file_put_contents($output, implode("\t", $line)."\n", FILE_APPEND);
-      }
-      $shops = array_merge($shops, $ret['shops']);
-      
-      //
-      $nexturl = $ret['nextpage'];
-      if (empty($nexturl) || isset($nexturl_list[$nexturl])) { // 既に処理済みのページの場合も終了する
-        break;
-      }
-      $nexturl_list[$nexturl] = $nexturl;
-      
-      $nextpage = "{$nexturl}";
-      $url = $nextpage;
-    }
-    file_put_contents($output, "END", FILE_APPEND);
-    Util::log("HPB LIST CREATE END");
-  }
-
-  function getPageShops($url) {
-    Util::log("pageshops;{$url}");
-  
-    $xml = $this->request($url, $type);
-
-    list($title) = $xml->xpath("//title");
-
-    // ページ数
-    list($maxpagestr) = $xml->xpath("//p[@class='pa bottom0 right0']");
-    preg_match("/\/([0-9]+)ページ/", "$maxpagestr", $matches);
-    $maxpage = $matches[1];
-
-    list($next) = $xml->xpath("//a[.='次へ']");
-    $nextpage = "{$next['href']}";
-    $shops = array();
-
-    if (strpos($nextpage, "http") === false) {
-      $nextpage = "https://beauty.hotpepper.jp".$nextpage;
-    }
-    
-    // 店舗リストshutoku 
-    foreach ($xml->xpath("//li[@class='searchListCassette']") as $sxml) {
-      $shop = array();
-      list($name) = $sxml->xpath(".//h3/a");
-      $shop['name'] = "{$name}";
-      $shop['hpburl'] = "{$name['href']}";
-
-      $shop = $this->getShopDetail("{$shop['hpburl']}");
-
-      $shops[] = $shop;
-    }
-    return array("shops" => $shops,
-           "nextpage" => $nextpage);
-  }
-
-  function request($url, $ident) {
-
-    if (isset($this->requetedList[$url])) {
-      // 同じURLにはアクセスしないで終了してしまう
-      exit;
-    }
-    $this->urlcache[$url] = 1;
-
-    $ident .= "y";
-    // テスト用
-    if (false && file_exists("/tmp/hpblist_{$ident}.html")) {
-      $doc = new DOMDocument();
-      $doc->loadHTMLFile("/tmp/hpblist_{$ident}.html");
-    } else {
-      $req = new HTTP_Request2();
-      $req->setAdapter('curl');
-      $req->setHeader("user-agent", "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36");
-      $req->setUrl($url);
-      $req->setMethod(HTTP_Request2::METHOD_GET);
-      $res = $req->send();
-
-      $doc = new DOMDocument();
-      $body = $res->getBody();
-      $body = str_replace('&nbsp;'," ", $body);
-      $body = str_replace("\r\n", "\n", $body);
-      $doc->loadHTML($body);
-      Util::log($url);
-
-      file_put_contents("/tmp/hpblist_{$ident}.html", $res->getBody());
-    }
-    
-    $xml = simplexml_import_dom($doc);
-    return $xml;
-  }
-
-
-  function getShopDetail($shopurl) {
-    $xml = $this->request($shopurl, "{$this->type}_shopx");
-    list($name) = $xml->xpath(".//p[@class='detailTitle']/a");
-    list($addr) = $xml->xpath(".//th[.='住所']/../td");
-    list($url) = $xml->xpath(".//th[.='お店のホームページ']/../td/a");
-    list($openrange) = $xml->xpath(".//th[.='営業時間']/../td");
-    list($holiday) = $xml->xpath(".//th[.='定休日']/../td");
-    list($comment) = $xml->xpath(".//th[.='備考']/../td");
-
-    // 電話番号を取得する
-    list($telurl) = $xml->xpath(".//th[.='電話番号']/../td/a");
-    if ($telurl) {
-      $telxml = $this->request("{$telurl['href']}", "{$this->type}_tel");
-      list($tel) = $telxml->xpath(".//th[.='電話番号  ']/../td");
-      $tel = trim($tel);
-    }
-    if (!empty($comment)) {
-      $comment = trim(htmlspecialchars_decode(strip_tags($comment->asXML())));
-    }
-
-    preg_match("/(slnH[0-9]+)/", $shopurl, $matches);
-    $ret = array(
-      "hpburl" => $shopurl,
-      "hpbid" => $matches[1],
-      "name" => "{$name}",
-      "addr" => "{$addr}",
-      "url" => "{$url}",
-      "range" => "{$openrange}",
-      "holiday" => "{$holiday}",
-      "tel" => "{$tel}",
-      "comment" => "{$comment}",
+    // 取得するお店のタイプごとの情報
+    var $type_list = array(
+        "居酒屋" => array(
+            "genreNo" => "G001",
+        ),
+        "ダイニングバー・バル" => array(
+            "genreNo" => "G002",
+        ),
+        "創作料理" => array(
+            "genreNo" => "G003",
+        ),
+        "和食" => array(
+            "genreNo" => "G004",
+        ),
+        "洋食" => array(
+            "genreNo" => "G005",
+        ),
+        "イタリアン・フレンチ" => array(
+            "genreNo" => "G006",
+        ),
     );
-    sleep(2);
-    return $ret;
-  }
+
+    // ホットペッパーグルメの都道府県
+    var $hp_pref_list = array("北海道"=>"SA41","青森県"=>"SA51","岩手県"=>"SA52","宮城県"=>"SA53","秋田県"=>"SA54","山形県"=>"SA55","福島県"=>"SA56","茨城県"=>"SA15","栃木県"=>"SA16","群馬県"=>"SA17","埼玉県"=>"SA13","千葉県"=>"SA14","東京都"=>"SA11","神奈川県"=>"SA12","新潟県"=>"SA61","富山県"=>"SA62","石川県"=>"SA63","福井県"=>"SA64","山梨県"=>"SA65","長野県"=>"SA66","岐阜県"=>"SA31","静岡県"=>"SA32","愛知県"=>"SA33","三重県"=>"SA34","滋賀県"=>"SA21","京都府"=>"SA22","大阪府"=>"SA23","兵庫県"=>"SA24","奈良県"=>"SA25","和歌山県"=>"SA26","鳥取県"=>"SA71","島根県"=>"SA72","岡山県"=>"SA73","広島県"=>"SA74","山口県"=>"SA75","徳島県"=>"SA81","香川県"=>"SA82","愛媛県"=>"SA83","高知県"=>"SA84","福岡県"=>"SA91","佐賀県"=>"SA92","長崎県"=>"SA93","熊本県"=>"SA94","大分県"=>"SA95","宮崎県"=>"SA96","鹿児島県"=>"SA97","沖縄県"=>"SA98",);
+
+    public function __construct() {
+    }
+
+    // csvファイルとして出力
+    public function createCSV($shopType, $pref) {
+
+        $this->shopType = $shopType;
+
+        // OZの店舗URLの一覧を取得(確認完了)
+        $shopUrls = $this->getShopUrls($areaId);
+
+        // データを保存するファイルを指定
+        $filename = $typeInfo['fileident']."_".sprintf("%02d.tsv", $areaId);
+        if (!file_exists($this->output_dir)) {
+            mkdir($this->output_dir);
+        } 
+        $output = "{$this->output_dir}/".date('Ymd_His')."_{$filename}";
+        Util::log($output);
+
+        // csvファイルに出力する絡む名を定義
+        $header = "種別,店舗名,都道府県,住所,電話番号,営業時間,席数,スタッフ,アクセス,定休日,カード,備考\n";
+        $infoTitle = array("name", "address", "tel", "bussineshour", "sheet", "stuff", "access", "holiday", "card", "memo");
+        file_put_contents($output, $header);
+
+        // 取得したURLから、各ショップの情報を取得する
+        echo "getShopDetail起動";
+        foreach($shopUrls as $shop => $shopPagePath){
+            $info = $this->getShopInfo($shopPagePath, $shopType);
+            // tsvの列に情報を追加する
+            echo "getShopInfo完了";
+            $tsvRow = array();
+            $tsvRow[] = $shopType;
+            foreach ($infoTitle as $key) {
+                if ($key == 'address') {
+                    // 県で切りたい
+                    $prefName = $this->oz_pref[$areaId];
+                    $tsvRow[] = $prefName;
+                    $addinfo = str_replace($prefName, "", $info[$key]);
+                    $tsvRow[] = preg_replace("/(\t|\n)/s", "", $addinfo);
+                } else {
+                    $tsvRow[] = preg_replace("/(\t|\n)/s", "", $info[$key]);
+                }
+            }
+            file_put_contents($output, implode("\t", $tsvRow)."\n", FILE_APPEND);
+        }
+        file_put_contents($output, "END", FILE_APPEND);
+    }
+
+    // urlにリクエストを投げて、bodyをxml形式で取得
+    // 引数の$urlは、SimpleXmlの型式だと動作しないので、Stringに変換してから入れること！！！
+    function request($url) {
+        $req = new HTTP_Request2();
+        $req->setAdapter('curl');
+        $req->setHeader("user-agent", "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36");
+        $req->setUrl($url);
+        $req->setMethod(HTTP_Request2::METHOD_GET);
+        $res = $req->send();
+
+        $doc = new DOMDocument();
+        $body = $res->getBody();
+        $body = str_replace('&nbsp;'," ", $body);
+        $body = str_replace("\r\n", "\n", $body);
+        $doc->loadHTML($body);
+        Util::log($url);
+        
+        $xml = simplexml_import_dom($doc);
+        return $xml;
+    }
+
+    // 店舗のURL一覧を取得
+    function getShopUrls($areaId) {
+        $typeInfo = $this->type_list[$this->shopType];
+
+        // areaIdエリアの情報を取得するためのクエリを作成する
+        $areas = $this->getAreas($areaId);
+        $query = "?AR=".implode(",", $areas);
+
+        // 情報を取得するURL指定OK
+        $targetUrl = $typeInfo["listtop"].$query;
+        echo "ターゲットURL: ".$targetUrl."\n";
+
+        // xpathの形式でクエリーから条件にあったお店のデータを取得する
+        $xml = $this->request($targetUrl);
+
+        // ページネーションの最終ページ番号を取得する
+        $targetPath = "///a/@href";
+        $nodes = $xml->xpath($targetPath);
+        if($nodes[0]){
+            preg_match('/pageNo=(?P<pageNo>\d+)/', $nodes[0], $match);
+            echo "最終ページ番号：".$match["pageNo"]."\n";
+            $lastPageNo = $match["pageNo"];
+        } else {
+            $lastPageNo = 1;
+        }
+
+        // ページごとに表示されている店舗情報のURLを取得する
+        echo "ページごとのURLを取得開始";
+        $shopUrls = array();
+        for ($i = 1; $i <= intval($lastPageNo); $i++) {
+            $targetPageUrl = $targetUrl."&pageNo=".$i;
+            $xml = $this->request($targetUrl);
+
+            // アクセスしたページから、URLの一覧を取得
+            $targetPath = "//h3[class='detailShopNameTitle']/a/@href";
+            $nodes = $xml->xpath($targetPath);
+            echo "\n".$i."ページ目のShopURLを取得中...";
+
+            // データを出力
+            foreach($nodes as $node){
+                array_push($shopUrls, $node);
+            }
+        }
+        return $shopUrls;
+    }
+
+    // 店舗の情報を取得する
+    private function getShopInfo($shopPagePath) {
+        echo "getShopDetail\n";
+
+        // 取得するショップのデータを取得
+        $typeInfo = $this->type_list[$this->shopType];
+
+        // urlからhtmlのbodyを取得
+        $xml = $this->request($shopPagePath);
+
+        //必要な情報を取得する
+        list($name) = $xml->xpath("//th[.='施設名']/../td");
+
+        var_dump($xml);
+        // 不要なhtmlタグの削除
+        $name = strip_tags($name->asXML());
+
+        $info = array(
+            "name" => $name
+        );
+        return $info;
+    }
 }
 
+// テスト
+$cron = new hpGourmetTool();
+$cron->createCSV(); //グルメ取得のテスト
+
+/*
 if (realpath($_SERVER['SCRIPT_FILENAME']) == __FILE__) {
-  var_dump(__FILE__.__LINE__);
-  if (count($argv) == 3) {
-    $c = new HpbShopListTool();
-    $c->create($argv[1], $argv[2]);
-  } else {
-    echo "\n";
-  }
-}
+    var_dump(__FILE__.__LINE__);
+    if (count($argv) == 3) {
+        $c = new hpGourmetTool();
+        $c->create($argv[1], $argv[2]);
+    } else {
+        echo "\n";
+    }
+}*/
